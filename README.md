@@ -50,20 +50,25 @@ Each cannon row shows what it's doing: `ON TARGET`, `FIRE`, `reload`, `not on ta
   ```
   A cannon only fires outward from its side, within `ARC` degrees. Cannons not in `SIDES` get their side from the layout, or set one by hand: `ARCS["cannon_mount_6"] = { center = 90, width = 160 }` (yaw in the ship's frame: 0 = +Z, 90 = -X, 180 = -Z, 270 = +X).
 
+## Round speed
+
+Your rounds' speed depends on barrel material and length, and the computer needs it to tell whether a shot will hit. With `AUTO_SPEED = true` it **learns it from the radar**: the radar aims for the real speed, so it finds the speed at which the barrel's aim would hit the target, and once 5 readings agree it uses (and saves) that. The screen shows "Round speed 6.0 (learned from the radar)".
+
+`SHOT_SPEED` is the first guess **and the most it will ever learn**, so leave it at your fastest possible (9 for autocannons). To learn again from scratch, delete `/firecontrol_speed` and reboot.
+
 ## If it never says ON TARGET
 
 Look at the miss distance on a cannon's row while the radar is aiming at a target:
 
-- **"high"** every time: your rounds are faster than it thinks. Raise `SHOT_SPEED`.
-- **"low"** every time: lower `SHOT_SPEED`.
-
-Or raise `HIT_RADIUS` a little.
+- **"high"** or **"low"** every time and the round speed isn't learned yet: wait a few seconds with a target in view.
+- Still not: raise `HIT_RADIUS` a little.
 
 ## Settings (top of startup.lua)
 
 | Setting | Default | |
 |---|---|---|
 | `AUTOCANNON` | true | hold the trigger while on target; false = big cannons |
+| `AUTO_SPEED` | true | learn the real round speed from the radar's aim |
 | `SHOT_SPEED` | 9 | blocks/tick. Autocannon: base speed + bonus per barrel. Steel 3 + 1.5 per barrel (up to 4), cast iron 5 + 2 (up to 2), bronze 3 + 1.5 (up to 3). Big cannon: 2 per Powder Charge |
 | `SHOT_LIFETIME` | 60 | ticks before an autocannon round vanishes: steel 60, bronze 25, cast iron 11. Targets beyond that are never shot at |
 | `SHOT_GRAVITY` | -0.025 | autocannon rounds; big cannon shells -0.05 |

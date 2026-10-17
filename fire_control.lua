@@ -13,8 +13,10 @@
 -- by themselves: they stay put relative to your ship while it moves or turns.
 
 AUTOCANNON = true         -- true: hold the trigger while on target. false: big cannons, one shot per RELOAD
-SHOT_SPEED = 9            -- blocks/tick. Autocannon: steel/cast iron with full barrels 9, bronze 7.5
+SHOT_SPEED = 9            -- blocks/tick, the most your rounds can do (learning never goes above it).
+                          --   Autocannon: steel/cast iron with full barrels 9, bronze 7.5
                           --   (big cannon: 2 per Powder Charge)
+AUTO_SPEED = true          -- learn the real round speed from how the radar aims (SHOT_SPEED is the first guess)
 SHOT_LIFETIME = 60        -- ticks before an autocannon round vanishes: steel 60, bronze 25, cast iron 11
 SHOT_GRAVITY = -0.025     -- autocannon rounds -0.025, big cannon shells -0.05
 SHOT_DRAG = 0.01
@@ -48,7 +50,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -354,6 +356,17 @@ local armed = false
 local lastAnyShot = -999
 local forceFire = false
 local forceUntil = nil
+local SPEED_FILE = "/firecontrol_speed"
+local speed = SHOT_SPEED
+local speedLearned = false
+local speedSamples = {}
+local lastLearn, learnIndex, learner = -999, 0, nil
+if AUTO_SPEED and fs.exists(SPEED_FILE) then
+  local f = fs.open(SPEED_FILE, "r")
+  local v = tonumber(f.readAll())
+  f.close()
+  if v and v > 0 then speed, speedLearned = v, true end
+end
 
 -- Which side of the ship each cannon is on. The cannons are spread along the
 -- ship's length (two per side), so that's the long axis; each cannon's side
@@ -430,9 +443,10 @@ end
 -- Fly a shell from the barrel as it points now. Returns the closest target
 -- (contact, miss distance, shell height minus target height there) or the
 -- part of your own ship it would hit.
-local function predictShot(m, dir)
+local function predictShot(m, dir, spd)
+  spd = spd or speed
   local pos = { x = m.world.x + dir.x * BARREL_LENGTH, y = m.world.y + dir.y * BARREL_LENGTH, z = m.world.z + dir.z * BARREL_LENGTH }
-  local v = { x = dir.x * SHOT_SPEED + shipVel.x, y = dir.y * SHOT_SPEED + shipVel.y, z = dir.z * SHOT_SPEED + shipVel.z }
+  local v = { x = dir.x * spd + shipVel.x, y = dir.y * spd + shipVel.y, z = dir.z * spd + shipVel.z }
   local best, bestMiss, bestDy = nil, math.huge, 0
   local far = MAX_RANGE + 50
   local prevOwn, prevTgt = {}, {}
@@ -466,10 +480,58 @@ local function readMount(m)
   if ok and type(info) == "table" then m.info = info else m.info = nil end
 end
 
+-- The radar aims with the real round speed, so the speed at which the
+-- barrel's current aim would hit the target is the real one. Each sample
+-- finds that speed; once several agree it's used (and saved).
+local function learnSpeed(m, dir)
+  local function missAt(sp)
+    local tgt, miss = predictShot(m, dir, sp)
+    if not tgt then return math.huge end
+    return miss
+  end
+  -- never above SHOT_SPEED: a target out of reach would otherwise "teach"
+  -- an impossible speed that reaches it
+  local a, b = 1.5, SHOT_SPEED * 1.05
+  local g = (sqrt(5) - 1) / 2
+  local c, d = b - g * (b - a), a + g * (b - a)
+  local fc, fd = missAt(c), missAt(d)
+  for _ = 1, 14 do
+    if fc < fd then
+      b, d, fd = d, c, fc
+      c = b - g * (b - a)
+      fc = missAt(c)
+    else
+      a, c, fc = c, d, fd
+      d = a + g * (b - a)
+      fd = missAt(d)
+    end
+  end
+  local best = (a + b) / 2
+  if missAt(best) > HIT_RADIUS * 0.6 then return end   -- not lined up with anything
+  speedSamples[#speedSamples + 1] = best
+  if #speedSamples > 9 then table.remove(speedSamples, 1) end
+  if #speedSamples < 5 then return end
+  local sorted = {}
+  for i, v in ipairs(speedSamples) do sorted[i] = v end
+  table.sort(sorted)
+  local med = sorted[math.ceil(#sorted / 2)]
+  local agree = 0
+  for _, v in ipairs(sorted) do
+    if abs(v - med) <= med * 0.08 then agree = agree + 1 end
+  end
+  if agree >= 5 and (not speedLearned or abs(med - speed) > 0.05) then
+    speed, speedLearned = med, true
+    local f = fs.open(SPEED_FILE, "w")
+    f.write(string.format("%.2f", speed))
+    f.close()
+  end
+end
+
 -- Autocannons fire while the trigger is held; big cannons get one pulse.
 local function setTrigger(m, on)
   if m.trigger ~= on then
-    pcall(peripheral.call, m.name, "fire", on)
+    local ok, err = pcall(peripheral.call, m.name, "fire", on)
+    m.fireErr = (not ok) and tostring(err) or nil
     m.trigger = on
     m.triggerAt = now()
   elseif on and now() - (m.triggerAt or 0) > 1 then
@@ -499,6 +561,10 @@ local function checkMount(m)
   if abs(wrap(yaw - center)) > width / 2 then return holdFire(m, "points at own ship") end
   local dir = qrot(pose.q, dirOf(yaw, pitch))
   local tgt, miss, dy, own = predictShot(m, dir)
+  if AUTO_SPEED and not own and tgt and learner == m then
+    learnSpeed(m, dir)
+    tgt, miss, dy, own = predictShot(m, dir)
+  end
   -- 2. never through another part of your ship
   if own then return holdFire(m, "own ship in line") end
   m.target, m.miss, m.dy = tgt, miss, dy
@@ -514,7 +580,7 @@ local function checkMount(m)
   if rock > MAX_ROCK and not forceFire then return holdFire(m, "ship rocking") end
   if AUTOCANNON then
     setTrigger(m, true)
-    m.state = "FIRING"
+    m.state = m.fireErr and ("fire error: " .. m.fireErr) or "FIRING"
     return
   end
   if t - m.lastShot < RELOAD then
@@ -549,6 +615,8 @@ local function draw()
   term.setTextColor(colors.white)
   print("")
   print(string.format("Radar: %s   ship %.0f m/s   rock %.1f", radar or "NONE", len(shipVel) * 20, rock))
+  print(string.format("Round speed %.1f %s", speed, speedLearned and "(learned from the radar)" or
+    (AUTO_SPEED and string.format("(SHOT_SPEED, learning %d/5)", #speedSamples) or "(SHOT_SPEED)")))
   if radarError then
     term.setTextColor(colors.red)
     print("Radar error: " .. radarError)
@@ -612,6 +680,13 @@ local function mainLoop()
       local jobs = {}
       for _, m in ipairs(mounts) do jobs[#jobs + 1] = function() readMount(m) end end
       if #jobs > 0 then parallel.waitForAll(table.unpack(jobs)) end
+      -- one cannon a couple of times a second also checks the round speed
+      learner = nil
+      if #mounts > 0 and now() - lastLearn > 0.5 then
+        lastLearn = now()
+        learnIndex = learnIndex % #mounts + 1
+        learner = mounts[learnIndex]
+      end
       jobs = {}
       for _, m in ipairs(mounts) do jobs[#jobs + 1] = function() checkMount(m) end end
       if #jobs > 0 then parallel.waitForAll(table.unpack(jobs)) end
