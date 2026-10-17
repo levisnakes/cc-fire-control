@@ -12,20 +12,27 @@
 -- Parts of your ship on their own sublevels (swivel/physics bearings) are found
 -- by themselves: they stay put relative to your ship while it moves or turns.
 
-CANNON_SPEED = 8          -- shell speed in blocks/tick: 2 per Powder Charge (4 charges = 8)
-BARREL_LENGTH = 4         -- blocks from the mount to the muzzle
-GRAVITY = -0.05           -- shell physics (Big Cannons default for HE, AP and solid shot)
-DRAG = 0.01
-HIT_RADIUS = 5            -- fire when the shell would pass this close to a target (blocks)
+AUTOCANNON = true         -- true: hold the trigger while on target. false: big cannons, one shot per RELOAD
+SHOT_SPEED = 9            -- blocks/tick. Autocannon: steel/cast iron with full barrels 9, bronze 7.5
+                          --   (big cannon: 2 per Powder Charge)
+SHOT_LIFETIME = 60        -- ticks before an autocannon round vanishes: steel 60, bronze 25, cast iron 11
+SHOT_GRAVITY = -0.025     -- autocannon rounds -0.025, big cannon shells -0.05
+SHOT_DRAG = 0.01
+BARREL_LENGTH = 3         -- blocks from the mount to the muzzle
+HIT_RADIUS = 5            -- fire when the shot would pass this close to a target (blocks)
 OWN_CLEARANCE = 8         -- never fire if it would pass this close to a part of your own ship
-RELOAD = 6                -- seconds between shots of one cannon (match your autoloader)
-STAGGER = 0.75            -- seconds between any two shots (recoil rocks the ship)
+RELOAD = 6                -- big cannons only: seconds between shots of one cannon
+STAGGER = 0.75            -- big cannons only: seconds between any two shots
 MAX_ROCK = 8              -- hold fire while the ship turns/rocks faster than this (deg/s)
 MAX_RANGE = 400
 MIN_RANGE = 20
 TARGETS = { SABLE = true, PLAYER = false, HOSTILE = false, MOB = false, ANIMAL = false }
 OWN_SHIP_RADIUS = 20      -- radar contacts this close to your ship's center are your ship
 TRACK_MEMORY = 15         -- seconds a contact is still followed after the radar last swept it
+SIDES = {                 -- which cannons are on which side (names as on the screen)
+  left = { "cannon_mount_4", "cannon_mount_5" },
+  right = { "cannon_mount_2", "cannon_mount_3" },
+}
 ARC = 160                 -- a cannon only fires outward: within this arc around its side of the ship
 ARCS = {}                 -- per cannon, e.g. ARCS["cannon_mount_0"] = { center = 90, width = 120 }
 YAW_OFFSET = 0            -- calibration if the program thinks the barrels point the wrong way
@@ -41,7 +48,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -346,13 +353,43 @@ end
 local armed = false
 local lastAnyShot = -999
 local forceFire = false
+local forceUntil = nil
 
 -- Which side of the ship each cannon is on. The cannons are spread along the
 -- ship's length (two per side), so that's the long axis; each cannon's side
 -- is the way it sits off the line down the middle of them.
+local function sideOf(name)
+  for side, list in pairs(SIDES or {}) do
+    for _, n in ipairs(list) do
+      if n == name then return side end
+    end
+  end
+end
+
+-- From SIDES: "left" points from the right-hand cannons to the left-hand ones.
+local function sidesArc(m)
+  local side = sideOf(m.name)
+  if side ~= "left" and side ~= "right" then return nil end
+  local sum = { left = { x = 0, z = 0, n = 0 }, right = { x = 0, z = 0, n = 0 } }
+  for _, k in ipairs(mounts) do
+    local sd = sideOf(k.name)
+    if k.localPos and sum[sd] then
+      sum[sd].x, sum[sd].z, sum[sd].n = sum[sd].x + k.localPos.x, sum[sd].z + k.localPos.z, sum[sd].n + 1
+    end
+  end
+  if sum.left.n == 0 or sum.right.n == 0 then return nil end
+  local dx = sum.left.x / sum.left.n - sum.right.x / sum.right.n
+  local dz = sum.left.z / sum.left.n - sum.right.z / sum.right.n
+  if abs(dx) + abs(dz) < 0.5 then return nil end
+  if side == "right" then dx, dz = -dx, -dz end
+  return yawOf({ x = dx, y = 0, z = dz })
+end
+
 local function arcFor(m)
   local o = ARCS[m.name]
   if o then return o.center or 0, o.width or ARC end
+  local c = sidesArc(m)
+  if c then return c, ARC end
   local n, mx, mz = 0, 0, 0
   for _, k in ipairs(mounts) do
     if k.localPos then n, mx, mz = n + 1, mx + k.localPos.x, mz + k.localPos.z end
@@ -395,14 +432,16 @@ end
 -- part of your own ship it would hit.
 local function predictShot(m, dir)
   local pos = { x = m.world.x + dir.x * BARREL_LENGTH, y = m.world.y + dir.y * BARREL_LENGTH, z = m.world.z + dir.z * BARREL_LENGTH }
-  local v = { x = dir.x * CANNON_SPEED + shipVel.x, y = dir.y * CANNON_SPEED + shipVel.y, z = dir.z * CANNON_SPEED + shipVel.z }
+  local v = { x = dir.x * SHOT_SPEED + shipVel.x, y = dir.y * SHOT_SPEED + shipVel.y, z = dir.z * SHOT_SPEED + shipVel.z }
   local best, bestMiss, bestDy = nil, math.huge, 0
   local far = MAX_RANGE + 50
   local prevOwn, prevTgt = {}, {}
   for i, s in ipairs(ownParts) do prevOwn[i] = contactPos(s, 0) end
   for i, s in ipairs(targets) do prevTgt[i] = contactPos(s, 0) end
-  for t = 1, MAX_TICKS do
-    local fx, fy, fz = -v.x * DRAG, -v.y * DRAG + GRAVITY, -v.z * DRAG
+  local ticks = MAX_TICKS
+  if AUTOCANNON then ticks = math.min(ticks, SHOT_LIFETIME) end
+  for t = 1, ticks do
+    local fx, fy, fz = -v.x * SHOT_DRAG, -v.y * SHOT_DRAG + SHOT_GRAVITY, -v.z * SHOT_DRAG
     local last = pos
     pos = { x = pos.x + v.x + fx / 2, y = pos.y + v.y + fy / 2, z = pos.z + v.z + fz / 2 }
     v = { x = v.x + fx, y = v.y + fy, z = v.z + fz }
@@ -427,61 +466,65 @@ local function readMount(m)
   if ok and type(info) == "table" then m.info = info else m.info = nil end
 end
 
-local function release(m)
-  if m.trigger then
-    pcall(peripheral.call, m.name, "fire", false)
-    m.trigger = false
+-- Autocannons fire while the trigger is held; big cannons get one pulse.
+local function setTrigger(m, on)
+  if m.trigger ~= on then
+    pcall(peripheral.call, m.name, "fire", on)
+    m.trigger = on
+    m.triggerAt = now()
+  elseif on and now() - (m.triggerAt or 0) > 1 then
+    pcall(peripheral.call, m.name, "fire", true)   -- re-assert now and then
+    m.triggerAt = now()
   end
 end
 
+local function holdFire(m, state)
+  setTrigger(m, false)
+  m.state = state
+end
+
 local function checkMount(m)
-  release(m)
+  if not AUTOCANNON and m.trigger then setTrigger(m, false) end
   m.miss, m.dy, m.target = nil, nil, nil
   local info = m.info
-  if not info then
-    m.state = "no reply"
-    return
-  end
+  if not info then return holdFire(m, "no reply") end
   -- the radar's controllers aim; computer control would lock them out
   if info.computerControl then pcall(peripheral.call, m.name, "setComputerControl", false) end
-  if not info.assembled then
-    m.state = "not assembled"
-    return
-  end
+  if not info.assembled then return holdFire(m, "not assembled") end
   m.localPos = { x = info.x + 0.5, y = info.y + (MOUNT_UP and 1.5 or -0.5), z = info.z + 0.5 }
   m.world = toWorld(m.localPos)
   local yaw, pitch = (tonumber(info.yaw) or 0) - YAW_OFFSET, (tonumber(info.pitch) or 0) * PITCH_SIGN
   -- 1. never across your own deck
   local center, width = arcFor(m)
-  if abs(wrap(yaw - center)) > width / 2 then
-    m.state = "points at own ship"
-    return
-  end
+  if abs(wrap(yaw - center)) > width / 2 then return holdFire(m, "points at own ship") end
   local dir = qrot(pose.q, dirOf(yaw, pitch))
   local tgt, miss, dy, own = predictShot(m, dir)
   -- 2. never through another part of your ship
-  if own then
-    m.state = "own ship in line"
-    return
-  end
+  if own then return holdFire(m, "own ship in line") end
   m.target, m.miss, m.dy = tgt, miss, dy
-  local onTarget = tgt and miss <= HIT_RADIUS
+  -- a held trigger stays on a little longer so it doesn't flicker at the edge
+  local radius = HIT_RADIUS
+  if AUTOCANNON and m.trigger then radius = HIT_RADIUS * 1.2 end
+  local onTarget = tgt and miss <= radius
   local t = now()
   if not onTarget and not forceFire then
-    m.state = tgt and "not on target" or "no target"
-  elseif t - m.lastShot < RELOAD then
+    return holdFire(m, tgt and "not on target" or "no target")
+  end
+  if not armed and not forceFire then return holdFire(m, "ON TARGET") end
+  if rock > MAX_ROCK and not forceFire then return holdFire(m, "ship rocking") end
+  if AUTOCANNON then
+    setTrigger(m, true)
+    m.state = "FIRING"
+    return
+  end
+  if t - m.lastShot < RELOAD then
     m.state = string.format("reload %.0fs", RELOAD - (t - m.lastShot))
-  elseif not armed and not forceFire then
-    m.state = "ON TARGET"
-  elseif rock > MAX_ROCK and not forceFire then
-    m.state = "ship rocking"
   elseif t - lastAnyShot < STAGGER then
     m.state = "ON TARGET"
   else
     -- claim the slot before the call yields, so two cannons can't both fire
     m.lastShot, lastAnyShot = t, t
-    m.trigger = true
-    pcall(peripheral.call, m.name, "fire", true)
+    setTrigger(m, true)
     m.shots = (m.shots or 0) + 1
     m.state = "FIRE"
   end
@@ -532,11 +575,13 @@ local function draw()
   print("")
   for _, m in ipairs(mounts) do
     local col = colors.lightGray
-    if m.state == "FIRE" then col = colors.red
+    if m.state == "FIRE" or m.state == "FIRING" then col = colors.red
     elseif m.state == "ON TARGET" then col = colors.lime
     elseif m.state == "points at own ship" or m.state == "own ship in line" then col = colors.orange end
     term.setTextColor(col)
-    local line = string.format("%-8s %-18s", m.name:gsub("^cannon_", ""):sub(1, 8), (m.state or ""):sub(1, 18))
+    local sd = sideOf(m.name)
+    local tag = sd == "left" and "L" or (sd == "right" and "R" or "?")
+    local line = string.format("%-8s %s %-18s", m.name:gsub("^cannon_", ""):sub(1, 8), tag, (m.state or ""):sub(1, 18))
     if m.miss and m.miss < 1e6 then
       line = line .. string.format(" miss %.0f", m.miss)
       if m.miss > HIT_RADIUS and abs(m.dy) > m.miss * 0.5 then line = line .. (m.dy > 0 and " high" or " low") end
@@ -570,7 +615,7 @@ local function mainLoop()
       jobs = {}
       for _, m in ipairs(mounts) do jobs[#jobs + 1] = function() checkMount(m) end end
       if #jobs > 0 then parallel.waitForAll(table.unpack(jobs)) end
-      forceFire = false
+      if not forceUntil or now() > forceUntil then forceFire = false end
     end
     draw()
     sleep(LOOP)
@@ -590,12 +635,18 @@ local function keyLoop()
       saveIgnored()
     elseif k == keys.f then
       forceFire = true
+      forceUntil = now() + (AUTOCANNON and 1 or 0)
     end
   end
 end
 
 -- updates wait until nothing is in reach
-function readyToUpdate() return not (armed and #targets > 0) end
+function readyToUpdate()
+  for _, m in ipairs(mounts) do
+    if m.trigger then return false end
+  end
+  return not (armed and #targets > 0)
+end
 
 -- ============================================================ auto-update
 
@@ -751,7 +802,11 @@ end
 
 
 findHardware()
-for _, m in ipairs(mounts) do pcall(peripheral.call, m.name, "setComputerControl", false) end
+for _, m in ipairs(mounts) do
+  pcall(peripheral.call, m.name, "setComputerControl", false)
+  pcall(peripheral.call, m.name, "fire", false)
+end
 bootUpdate()
-parallel.waitForAny(mainLoop, keyLoop, updateLoop)
+local ok, err = pcall(parallel.waitForAny, mainLoop, keyLoop, updateLoop)
 for _, m in ipairs(mounts) do pcall(peripheral.call, m.name, "fire", false) end
+if not ok then error(err, 0) end
