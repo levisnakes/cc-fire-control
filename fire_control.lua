@@ -21,6 +21,11 @@ SHOT_LIFETIME = 60        -- ticks before an autocannon round vanishes: steel 60
 SHOT_GRAVITY = -0.025     -- autocannon rounds -0.025, big cannon shells -0.05
 SHOT_DRAG = 0.01
 BARREL_LENGTH = 3         -- blocks from the mount to the muzzle
+FIRE_MODE = "radar"       -- "radar": fire when the radar has the barrel settled on a target (trusts
+                          --   the radar's aim). "predict": only when this program's own shot
+                          --   prediction says it will pass within HIT_RADIUS
+AIM_CONE = 15             -- radar mode: barrel within this many degrees of a target
+SETTLE_RATE = 12          -- radar mode: barrel turning slower than this (deg/s) = settled, not swinging
 HIT_RADIUS = 5            -- fire when the shot would pass this close to a target (blocks)
 HIT_ANGLE = 1.5           -- ...or within this many degrees, whichever is bigger (far targets)
 MOVE_SLACK = 0.1          -- extra room for a moving target: this x its speed x the round's flight time (at most 3 blocks)
@@ -53,7 +58,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -578,6 +583,13 @@ local function checkMount(m)
   local center, width = arcFor(m)
   if abs(wrap(yaw - center)) > width / 2 then return holdFire(m, "points at own ship") end
   local dir = qrot(pose.q, dirOf(yaw, pitch))
+  -- how fast the barrel is turning (the radar swinging it to a new aim)
+  local nowT = now()
+  if m.aimT and nowT > m.aimT then
+    local r = math.max(abs(wrap(yaw - m.aimYaw)), abs(pitch - m.aimPitch)) / (nowT - m.aimT)
+    m.slew = m.slew and (m.slew * 0.5 + r * 0.5) or r
+  end
+  m.aimYaw, m.aimPitch, m.aimT = yaw, pitch, nowT
   local tgt, miss, dy, own, tof = predictShot(m, dir)
   if AUTO_SPEED and not own and tgt and learner == m then
     learnSpeed(m, dir)
@@ -598,9 +610,27 @@ local function checkMount(m)
   m.radius = radius
   local t = now()
   local onTarget = tgt and miss <= radius
+  if FIRE_MODE == "radar" then
+    -- the target the barrel points closest to, by angle only
+    local best, bestA = nil, math.huge
+    for _, c in ipairs(targets) do
+      local p = contactPos(c, 0)
+      local to = { x = p.x - m.world.x, y = p.y - m.world.y, z = p.z - m.world.z }
+      local l = len(to)
+      if l > 0 then
+        local a = deg(math.acos(math.max(-1, math.min(1, (to.x * dir.x + to.y * dir.y + to.z * dir.z) / l))))
+        if a < bestA then best, bestA = c, a end
+      end
+    end
+    m.aimErr = best and bestA or nil
+    local settled = m.slew ~= nil and m.slew < SETTLE_RATE
+    onTarget = best ~= nil and bestA <= AIM_CONE and (settled or (AUTOCANNON and m.trigger))
+    if best then tgt = best end
+  end
   -- autocannons: a burst runs at least MIN_BURST once it starts
   if AUTOCANNON and m.trigger and tgt and t < (m.burstUntil or 0) then onTarget = true end
   if not onTarget and not forceFire then
+    if FIRE_MODE == "radar" and m.aimErr and m.aimErr <= AIM_CONE then return holdFire(m, "radar aiming") end
     return holdFire(m, tgt and "not on target" or "no target")
   end
   if not armed and not forceFire then return holdFire(m, "ON TARGET") end
@@ -778,7 +808,8 @@ if WARSHIP then
           dx = p and p.x - pose.pos.x, dy = p and p.y - pose.pos.y, dz = p and p.z - pose.pos.z }
       end
       for i, m in ipairs(mounts) do
-        st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy, radius = m.radius }
+        st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy, radius = m.radius,
+          aimErr = m.aimErr, radarMode = FIRE_MODE == "radar" }
       end
       -- what else the radar sees, nearest first, and why it isn't a target
       st.others = {}
