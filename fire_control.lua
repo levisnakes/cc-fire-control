@@ -50,7 +50,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -340,9 +340,17 @@ local function scan()
       local p = contactPos(s)
       local d = len({ x = p.x - pose.pos.x, y = p.y - pose.pos.y, z = p.z - pose.pos.z })
       s.d = d
+      -- why a contact isn't a target (shown on the cc-warship screen)
+      s.why = nil
+      if ignored[id] then s.why = "ignored (U clears)"
+      elseif s.cat == "SABLE" and d < OWN_SHIP_RADIUS then s.why = "part of this ship (OWN_SHIP_RADIUS)"
+      elseif s.cat == "SABLE" and (s.rigid or 0) >= 2 then s.why = "moves with this ship (own part)"
+      elseif not TARGETS[s.cat] then s.why = "not a target type (TARGETS)"
+      elseif d < MIN_RANGE then s.why = "too close (MIN_RANGE)"
+      elseif d > MAX_RANGE then s.why = "too far (MAX_RANGE)" end
       if ignored[id] or (s.cat == "SABLE" and (d < OWN_SHIP_RADIUS or (s.rigid or 0) >= 2)) then
         ownParts[#ownParts + 1] = s
-      elseif TARGETS[s.cat] and d >= MIN_RANGE and d <= MAX_RANGE then
+      elseif not s.why then
         targets[#targets + 1] = s
       end
     end
@@ -759,6 +767,12 @@ if WARSHIP then
       for i, m in ipairs(mounts) do
         st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy }
       end
+      -- what else the radar sees, nearest first, and why it isn't a target
+      st.others = {}
+      for id, c in pairs(seen) do
+        if c.why and id ~= shipId and c.d then st.others[#st.others + 1] = { cat = c.cat, kind = c.kind, d = c.d, why = c.why } end
+      end
+      table.sort(st.others, function(a, b) return a.d < b.d end)
       return st
     end,
   }
