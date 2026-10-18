@@ -58,7 +58,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -782,17 +782,22 @@ local function keyLoop()
 end
 
 -- Run by cc-warship: the Ship Pilot's "Auto cannons" screen shows this and
--- uses these controls, so this program draws nothing itself.
+-- uses these controls, so this program draws nothing itself. Under Warship
+-- there's no arming: the cannons fire only while the fire key is held
+-- (hold(), called again and again while it's down).
 if WARSHIP then
   WARSHIP.guns = {
     version = VERSION,
-    toggle = toggleArmed,
+    hold = function()
+      forceFire = true
+      forceUntil = now() + 0.25
+    end,
     ignoreNearest = ignoreNearest,
     unignoreAll = unignoreAll,
     fire = fireNow,
     state = function()
       local st = {
-        armed = armed, radar = radar, radarError = radarError, fireControllers = fireControllers,
+        armed = armed, firing = forceFire, radar = radar, radarError = radarError, fireControllers = fireControllers,
         autocannon = AUTOCANNON, hitRadius = HIT_RADIUS, maxRock = MAX_ROCK,
         speed = speed, speedLearned = speedLearned, learning = AUTO_SPEED and not speedLearned and #speedSamples or nil,
         shipSpeed = len(shipVel) * 20, rock = rock, ownParts = #ownParts, ignored = 0, maxRange = MAX_RANGE,
