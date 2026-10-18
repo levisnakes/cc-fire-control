@@ -50,7 +50,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -361,11 +361,15 @@ local speed = SHOT_SPEED
 local speedLearned = false
 local speedSamples = {}
 local lastLearn, learnIndex, learner = -999, 0, nil
+-- Learning only looks between these: a round slower than 40% of SHOT_SPEED
+-- isn't one of yours (1.1.0-1.5.0 could "learn" 1.5 and then never fire).
+local SPEED_MIN, SPEED_MAX = math.max(1.5, SHOT_SPEED * 0.4), SHOT_SPEED * 1.05
 if AUTO_SPEED and fs.exists(SPEED_FILE) then
   local f = fs.open(SPEED_FILE, "r")
   local v = tonumber(f.readAll())
   f.close()
-  if v and v > 0 then speed, speedLearned = v, true end
+  if v and v >= SPEED_MIN and v <= SPEED_MAX then speed, speedLearned = v, true
+  else fs.delete(SPEED_FILE) end
 end
 
 -- Which side of the ship each cannon is on. The cannons are spread along the
@@ -491,7 +495,7 @@ local function learnSpeed(m, dir)
   end
   -- never above SHOT_SPEED: a target out of reach would otherwise "teach"
   -- an impossible speed that reaches it
-  local a, b = 1.5, SHOT_SPEED * 1.05
+  local a, b = SPEED_MIN, SPEED_MAX
   local g = (sqrt(5) - 1) / 2
   local c, d = b - g * (b - a), a + g * (b - a)
   local fc, fd = missAt(c), missAt(d)
@@ -508,6 +512,9 @@ local function learnSpeed(m, dir)
   end
   local best = (a + b) / 2
   if missAt(best) > HIT_RADIUS * 0.6 then return end   -- not lined up with anything
+  -- the best at the very edge of the range means no speed really lines up
+  local edge = (SPEED_MAX - SPEED_MIN) * 0.03
+  if best < SPEED_MIN + edge or best > SPEED_MAX - edge then return end
   speedSamples[#speedSamples + 1] = best
   if #speedSamples > 9 then table.remove(speedSamples, 1) end
   if #speedSamples < 5 then return end
