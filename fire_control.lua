@@ -50,7 +50,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -692,27 +692,65 @@ local function mainLoop()
       if #jobs > 0 then parallel.waitForAll(table.unpack(jobs)) end
       if not forceUntil or now() > forceUntil then forceFire = false end
     end
-    draw()
+    if not WARSHIP then draw() end
     sleep(LOOP)
   end
+end
+
+local function toggleArmed() armed = not armed end
+local function ignoreNearest()
+  if not targets[1] then return false end
+  ignored[targets[1].id] = true
+  saveIgnored()
+  return true
+end
+local function unignoreAll()
+  ignored = {}
+  saveIgnored()
+end
+local function fireNow()
+  forceFire = true
+  forceUntil = now() + (AUTOCANNON and 1 or 0)
 end
 
 local function keyLoop()
   while true do
     local _, k = os.pullEvent("key")
-    if k == keys.a then
-      armed = not armed
-    elseif k == keys.x and targets[1] then
-      ignored[targets[1].id] = true
-      saveIgnored()
-    elseif k == keys.u then
-      ignored = {}
-      saveIgnored()
-    elseif k == keys.f then
-      forceFire = true
-      forceUntil = now() + (AUTOCANNON and 1 or 0)
-    end
+    if k == keys.a then toggleArmed()
+    elseif k == keys.x then ignoreNearest()
+    elseif k == keys.u then unignoreAll()
+    elseif k == keys.f then fireNow() end
   end
+end
+
+-- Run by cc-warship: the Ship Pilot's "Auto cannons" screen shows this and
+-- uses these controls, so this program draws nothing itself.
+if WARSHIP then
+  WARSHIP.guns = {
+    version = VERSION,
+    toggle = toggleArmed,
+    ignoreNearest = ignoreNearest,
+    unignoreAll = unignoreAll,
+    fire = fireNow,
+    state = function()
+      local st = {
+        armed = armed, radar = radar, radarError = radarError, fireControllers = fireControllers,
+        autocannon = AUTOCANNON, hitRadius = HIT_RADIUS, maxRock = MAX_ROCK,
+        speed = speed, speedLearned = speedLearned, learning = AUTO_SPEED and not speedLearned and #speedSamples or nil,
+        shipSpeed = len(shipVel) * 20, rock = rock, ownParts = #ownParts, ignored = 0,
+        targets = {}, mounts = {},
+      }
+      for _ in pairs(ignored) do st.ignored = st.ignored + 1 end
+      for i = 1, math.min(3, #targets) do
+        local c = targets[i]
+        st.targets[i] = { cat = c.cat, kind = c.kind, d = c.d, speed = len(contactVel(c)) * 20, ago = now() - c.seenAt }
+      end
+      for i, m in ipairs(mounts) do
+        st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy }
+      end
+      return st
+    end,
+  }
 end
 
 -- updates wait until nothing is in reach
