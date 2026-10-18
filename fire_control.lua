@@ -50,7 +50,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -737,13 +737,17 @@ if WARSHIP then
         armed = armed, radar = radar, radarError = radarError, fireControllers = fireControllers,
         autocannon = AUTOCANNON, hitRadius = HIT_RADIUS, maxRock = MAX_ROCK,
         speed = speed, speedLearned = speedLearned, learning = AUTO_SPEED and not speedLearned and #speedSamples or nil,
-        shipSpeed = len(shipVel) * 20, rock = rock, ownParts = #ownParts, ignored = 0,
+        shipSpeed = len(shipVel) * 20, rock = rock, ownParts = #ownParts, ignored = 0, maxRange = MAX_RANGE,
+        lockedAt = lastAnyShot,
         targets = {}, mounts = {},
       }
       for _ in pairs(ignored) do st.ignored = st.ignored + 1 end
-      for i = 1, math.min(3, #targets) do
+      -- dx/dy/dz: where it is now, from this ship (for the captain's radar)
+      for i = 1, math.min(8, #targets) do
         local c = targets[i]
-        st.targets[i] = { cat = c.cat, kind = c.kind, d = c.d, speed = len(contactVel(c)) * 20, ago = now() - c.seenAt }
+        local p = pose and contactPos(c, 0)
+        st.targets[i] = { cat = c.cat, kind = c.kind, d = c.d, speed = len(contactVel(c)) * 20, ago = now() - c.seenAt,
+          dx = p and p.x - pose.pos.x, dy = p and p.y - pose.pos.y, dz = p and p.z - pose.pos.z }
       end
       for i, m in ipairs(mounts) do
         st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy }
