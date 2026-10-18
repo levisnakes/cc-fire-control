@@ -22,6 +22,9 @@ SHOT_GRAVITY = -0.025     -- autocannon rounds -0.025, big cannon shells -0.05
 SHOT_DRAG = 0.01
 BARREL_LENGTH = 3         -- blocks from the mount to the muzzle
 HIT_RADIUS = 5            -- fire when the shot would pass this close to a target (blocks)
+HIT_ANGLE = 1.5           -- ...or within this many degrees, whichever is bigger (far targets)
+MOVE_SLACK = 0.1          -- extra room for a moving target: this x its speed x the round's flight time (at most 3 blocks)
+MIN_BURST = 0.5           -- autocannons: once firing, keep firing at least this many seconds
 OWN_CLEARANCE = 8         -- never fire if it would pass this close to a part of your own ship
 RELOAD = 6                -- big cannons only: seconds between shots of one cannon
 STAGGER = 0.75            -- big cannons only: seconds between any two shots
@@ -50,7 +53,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.5.2"
+VERSION = "1.6.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -459,7 +462,7 @@ local function predictShot(m, dir, spd)
   spd = spd or speed
   local pos = { x = m.world.x + dir.x * BARREL_LENGTH, y = m.world.y + dir.y * BARREL_LENGTH, z = m.world.z + dir.z * BARREL_LENGTH }
   local v = { x = dir.x * spd + shipVel.x, y = dir.y * spd + shipVel.y, z = dir.z * spd + shipVel.z }
-  local best, bestMiss, bestDy = nil, math.huge, 0
+  local best, bestMiss, bestDy, bestT = nil, math.huge, 0, 0
   local far = MAX_RANGE + 50
   local prevOwn, prevTgt = {}, {}
   for i, s in ipairs(ownParts) do prevOwn[i] = contactPos(s, 0) end
@@ -479,12 +482,12 @@ local function predictShot(m, dir, spd)
     for i, s in ipairs(targets) do
       local p = contactPos(s, t)
       local d, dy = closest(last, pos, prevTgt[i], p)
-      if d < bestMiss then best, bestMiss, bestDy = s, d, dy end
+      if d < bestMiss then best, bestMiss, bestDy, bestT = s, d, dy, t end
       prevTgt[i] = p
     end
     if len({ x = pos.x - m.world.x, y = pos.y - m.world.y, z = pos.z - m.world.z }) > far then break end
   end
-  return best, bestMiss, bestDy, nil
+  return best, bestMiss, bestDy, nil, bestT
 end
 
 local function readMount(m)
@@ -575,25 +578,35 @@ local function checkMount(m)
   local center, width = arcFor(m)
   if abs(wrap(yaw - center)) > width / 2 then return holdFire(m, "points at own ship") end
   local dir = qrot(pose.q, dirOf(yaw, pitch))
-  local tgt, miss, dy, own = predictShot(m, dir)
+  local tgt, miss, dy, own, tof = predictShot(m, dir)
   if AUTO_SPEED and not own and tgt and learner == m then
     learnSpeed(m, dir)
-    tgt, miss, dy, own = predictShot(m, dir)
+    tgt, miss, dy, own, tof = predictShot(m, dir)
   end
   -- 2. never through another part of your ship
   if own then return holdFire(m, "own ship in line") end
   m.target, m.miss, m.dy = tgt, miss, dy
-  -- a held trigger stays on a little longer so it doesn't flicker at the edge
+  -- How close counts as a hit: HIT_RADIUS, or HIT_ANGLE at long range, plus
+  -- room for a moving target (the longer the round flies, the less sure
+  -- where it will be). A held trigger gets a bit more so it doesn't flicker.
   local radius = HIT_RADIUS
-  if AUTOCANNON and m.trigger then radius = HIT_RADIUS * 1.2 end
-  local onTarget = tgt and miss <= radius
+  if tgt then
+    radius = math.max(HIT_RADIUS, (tgt.d or 0) * math.tan(rad(HIT_ANGLE)))
+      + math.min(3, len(contactVel(tgt)) * (tof or 0) * MOVE_SLACK)
+  end
+  if AUTOCANNON and m.trigger then radius = radius * 1.3 end
+  m.radius = radius
   local t = now()
+  local onTarget = tgt and miss <= radius
+  -- autocannons: a burst runs at least MIN_BURST once it starts
+  if AUTOCANNON and m.trigger and tgt and t < (m.burstUntil or 0) then onTarget = true end
   if not onTarget and not forceFire then
     return holdFire(m, tgt and "not on target" or "no target")
   end
   if not armed and not forceFire then return holdFire(m, "ON TARGET") end
   if rock > MAX_ROCK and not forceFire then return holdFire(m, "ship rocking") end
   if AUTOCANNON then
+    if not m.trigger then m.burstUntil = t + MIN_BURST end
     setTrigger(m, true)
     m.state = m.fireErr and ("fire error: " .. m.fireErr) or "FIRING"
     return
@@ -765,7 +778,7 @@ if WARSHIP then
           dx = p and p.x - pose.pos.x, dy = p and p.y - pose.pos.y, dz = p and p.z - pose.pos.z }
       end
       for i, m in ipairs(mounts) do
-        st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy }
+        st.mounts[i] = { name = m.name, side = sideOf(m.name), state = m.state, miss = m.miss, dy = m.dy, radius = m.radius }
       end
       -- what else the radar sees, nearest first, and why it isn't a target
       st.others = {}
