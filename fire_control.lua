@@ -58,7 +58,7 @@ end
 
 -- ============================================================ math
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local sin, cos, sqrt, abs, deg, rad = math.sin, math.cos, math.sqrt, math.abs, math.deg, math.rad
 local LOOP = 0.1
@@ -391,7 +391,21 @@ end
 -- Which side of the ship each cannon is on. The cannons are spread along the
 -- ship's length (two per side), so that's the long axis; each cannon's side
 -- is the way it sits off the line down the middle of them.
+-- Sides picked on the cc-warship screen win over SIDES: name -> "left",
+-- "right" or "auto" (auto = worked out from where the cannon sits).
+local SIDE_FILE = "/firecontrol_sides"
+local sideSaved = {}
+if fs.exists(SIDE_FILE) then
+  local f = fs.open(SIDE_FILE, "r")
+  local t = textutils.unserialize(f.readAll())
+  f.close()
+  if type(t) == "table" then sideSaved = t end
+end
+
 local function sideOf(name)
+  local saved = sideSaved[name]
+  if saved == "left" or saved == "right" then return saved end
+  if saved == "auto" then return nil end
   for side, list in pairs(SIDES or {}) do
     for _, n in ipairs(list) do
       if n == name then return side end
@@ -791,6 +805,16 @@ if WARSHIP then
     hold = function()
       forceFire = true
       forceUntil = now() + 0.25
+    end,
+    -- left -> right -> auto -> left, saved on this computer
+    cycleSide = function(name)
+      local cur = sideOf(name)
+      local nxt = (cur == "left" and "right") or (cur == "right" and "auto") or "left"
+      sideSaved[name] = nxt
+      local f = fs.open(SIDE_FILE, "w")
+      f.write(textutils.serialize(sideSaved))
+      f.close()
+      return nxt
     end,
     ignoreNearest = ignoreNearest,
     unignoreAll = unignoreAll,
